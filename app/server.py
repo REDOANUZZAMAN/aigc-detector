@@ -3,7 +3,9 @@
 Stateless: uploaded images are forwarded to the Modal GPU backend and never
 written to disk.
 """
+import base64
 import io
+import ipaddress
 import os
 import secrets
 import time
@@ -15,9 +17,11 @@ from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile, 
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
+from pydantic import BaseModel
 
 from . import metadata
+from .fetch import FetchError, fetch_image
 
 try:  # iPhone photos
     from pillow_heif import register_heif_opener
@@ -37,17 +41,46 @@ NATIVE = {"JPEG", "PNG", "WEBP"}
 
 STATIC = Path(__file__).parent / "static"
 
+
+def _networks(spec: str) -> list:
+    return [ipaddress.ip_network(n.strip()) for n in spec.replace("\n", ",").split(",")
+            if n.strip() and not n.strip().startswith("#")]
+
+
+# Peers whose X-Forwarded-For we believe: Traefik reaches us over the docker
+# network. Traefik itself has no forwardedHeaders.trustedIPs, so it discards any
+# client-sent X-Forwarded-For and writes the address it actually saw.
+TRUSTED_PROXIES = _networks(os.environ.get(
+    "TRUSTED_PROXIES", "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.0/8,::1/128,fc00::/7"))
+# CF-Connecting-IP is only honoured when that address is Cloudflare's.
+CLOUDFLARE = _networks((Path(__file__).parent / "trust" / "cloudflare-ips.txt").read_text())
+
 app = FastAPI(title="AIGC Detector", docs_url="/api/docs", redoc_url=None)
 basic = HTTPBasic(auto_error=False)
 _hits: dict[str, deque] = defaultdict(deque)
 _last_warm = 0.0
 
 
+def _in(addr: str, nets: list) -> bool:
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return False
+    return any(ip in n for n in nets)
+
+
 def client_ip(request: Request) -> str:
-    h = request.headers
-    return (h.get("cf-connecting-ip")
-            or h.get("x-forwarded-for", "").split(",")[0].strip()
-            or (request.client.host if request.client else "unknown"))
+    """Rate-limit key. Headers are only believed from a proxy we trust, because
+    anyone can send X-Forwarded-For or CF-Connecting-IP."""
+    peer = request.client.host if request.client else "unknown"
+    if not _in(peer, TRUSTED_PROXIES):
+        return peer
+    xff = [x.strip() for x in request.headers.get("x-forwarded-for", "").split(",") if x.strip()]
+    seen = xff[-1] if xff else peer          # what Traefik saw
+    cf = request.headers.get("cf-connecting-ip", "").strip()
+    if cf and _in(seen, CLOUDFLARE):
+        return cf
+    return seen
 
 
 def gate(request: Request, creds: HTTPBasicCredentials | None = Depends(basic)) -> str:
@@ -116,23 +149,19 @@ async def warm(_: str = Depends(gate)):
     return {"status": "warm-requested"}
 
 
-@app.post("/api/analyze")
-async def analyze(request: Request, file: UploadFile = File(...), caller: str = Depends(gate)):
-    data = await file.read(MAX_BYTES + 1)
-    if len(data) > MAX_BYTES:
-        raise HTTPException(413, f"File too large (max {MAX_BYTES // 1024 // 1024} MB).")
+def inspect_image(data: bytes) -> dict:
     if not data:
         raise HTTPException(400, "Empty file.")
     try:
         with Image.open(io.BytesIO(data)) as probe:
             probe.verify()
-        meta = metadata.inspect(data)
+        return metadata.inspect(data)
     except (UnidentifiedImageError, OSError, SyntaxError):
         raise HTTPException(415, "Not a supported image (JPEG, PNG, WebP, HEIC, GIF, BMP, TIFF).")
 
-    rate_limit(request, caller)
 
-    payload, name = data, file.filename or "upload"
+async def score(data: bytes, name: str, meta: dict) -> dict:
+    payload = data
     if meta["format"] not in NATIVE:
         with Image.open(io.BytesIO(data)) as im:
             buf = io.BytesIO()
@@ -159,6 +188,46 @@ async def analyze(request: Request, file: UploadFile = File(...), caller: str = 
 
     result = r.json()
     result["metadata"] = meta
-    result["file"] = {"name": file.filename, "bytes": len(data), "format": meta["format"]}
+    result["file"] = {"name": name, "bytes": len(data), "format": meta["format"]}
     result["elapsed_s"] = round(time.time() - t0, 2)
+    return result
+
+
+def preview(data: bytes, max_side: int = 1600) -> str:
+    """Small JPEG data URL, so the page can show a fetched image without hotlinking it."""
+    with Image.open(io.BytesIO(data)) as im:
+        im = ImageOps.exif_transpose(im).convert("RGB")
+        im.thumbnail((max_side, max_side))
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=85)
+    return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+@app.post("/api/analyze")
+async def analyze(request: Request, file: UploadFile = File(...), caller: str = Depends(gate)):
+    data = await file.read(MAX_BYTES + 1)
+    if len(data) > MAX_BYTES:
+        raise HTTPException(413, f"File too large (max {MAX_BYTES // 1024 // 1024} MB).")
+    meta = inspect_image(data)
+    rate_limit(request, caller)
+    return JSONResponse(await score(data, file.filename or "upload", meta))
+
+
+class UrlIn(BaseModel):
+    url: str
+
+
+@app.post("/api/analyze-url")
+async def analyze_url(body: UrlIn, request: Request, caller: str = Depends(gate)):
+    # Charged before fetching: the fetch itself is work someone could abuse.
+    rate_limit(request, caller)
+    url = body.url.strip()
+    try:
+        data, name = await fetch_image(url, MAX_BYTES)
+    except FetchError as e:
+        raise HTTPException(e.status, str(e))
+    meta = inspect_image(data)
+    result = await score(data, name, meta)
+    result["source_url"] = url
+    result["preview"] = preview(data)
     return JSONResponse(result)

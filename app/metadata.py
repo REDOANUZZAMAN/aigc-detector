@@ -10,6 +10,8 @@ import re
 
 from PIL import ExifTags, Image
 
+from . import c2pa_check
+
 # Substrings that identify a generator when they appear in metadata text.
 GENERATORS = {
     "midjourney": "Midjourney",
@@ -34,9 +36,10 @@ GENERATORS = {
     "designer": None,  # too generic alone; only counted with "microsoft"
 }
 
-# IPTC DigitalSourceType values that declare synthetic content.
-IPTC_AI = ("trainedalgorithmicmedia", "compositewithtrainedalgorithmicmedia",
-           "algorithmicmedia")
+# IPTC DigitalSourceType values that declare a trained model made the pixels.
+# Plain "algorithmicMedia" (fractals, gradients) is not AI. Substring matching
+# makes the first entry cover the composite variant too.
+IPTC_AI = ("trainedalgorithmicmedia", "compositewithtrainedalgorithmicmedia")
 
 # PNG text keys written by local diffusion front-ends.
 SD_PNG_KEYS = {"parameters": "AUTOMATIC1111 / Forge generation parameters",
@@ -61,7 +64,7 @@ def _match_generator(text: str) -> str | None:
 
 
 def inspect(data: bytes) -> dict:
-    """Return {"format", "findings": [...], "declared_ai": bool, "camera": str|None}."""
+    """Return {"format", "findings": [...], "declared_ai", "camera", "c2pa"}."""
     findings: list[dict] = []
     declared_ai = False
     camera = None
@@ -72,14 +75,32 @@ def inspect(data: bytes) -> dict:
     img = Image.open(io.BytesIO(data))
     fmt = img.format or "unknown"
 
-    # --- C2PA / Content Credentials (JUMBF box) -------------------------------
-    if b"c2pa" in data and (b"jumb" in data or b"caBX" in data):
-        add("c2pa", "Content Credentials (C2PA)",
-            "A C2PA manifest is embedded. Verify it at contentcredentials.org/verify.",
-            "info")
-        if any(s.encode() in data.lower() for s in IPTC_AI):
+    # --- C2PA / Content Credentials ------------------------------------------
+    cred = c2pa_check.verify(data, fmt)
+    if cred:
+        who = cred["signer"] or "unknown signer"
+        if cred["state"] == "trusted":
+            text, signal = f"Signed by {who}; certificate is on the C2PA trust list.", "info"
+        elif cred["state"] == "valid":
+            text, signal = (f"Signed by {who}, but the certificate is not on a public trust "
+                            "list. Anyone can make such a signature.", "neutral")
+        else:
+            text, signal = (f"Manifest from {who} fails verification "
+                            f"({', '.join(cred['errors'][:3]) or 'invalid'}): the file was "
+                            "altered after signing, or the signature is forged.", "warn")
+        if cred["generator"]:
+            text += f" Made with: {cred['generator']}."
+        add("c2pa", "Content Credentials (C2PA)", text, signal)
+        if cred["declares_ai"]:
             declared_ai = True
-            add("c2pa_ai", "C2PA declares AI", "Manifest records trained-algorithmic media.", "ai")
+            where = ("in this file's manifest" if cred["ai_actions"]
+                     else "in an earlier step of its edit history")
+            add("c2pa_ai", "C2PA declares AI",
+                f"Records AI-generated content {where} (IPTC trainedAlgorithmicMedia).", "ai")
+    elif b"c2pa" in data and (b"jumb" in data or b"caBX" in data):
+        add("c2pa", "Content Credentials (C2PA)",
+            "A manifest seems to be embedded but could not be read. Check it at "
+            "contentcredentials.org/verify.", "neutral")
 
     # --- XMP (IPTC digital source type, creator tool) -------------------------
     xmp = b""
@@ -146,4 +167,5 @@ def inspect(data: bytes) -> dict:
             "Nothing embedded. Common for screenshots and anything re-shared through "
             "social apps; says nothing either way.", "neutral")
 
-    return {"format": fmt, "findings": findings, "declared_ai": declared_ai, "camera": camera}
+    return {"format": fmt, "findings": findings, "declared_ai": declared_ai, "camera": camera,
+            "c2pa": cred}

@@ -1,5 +1,5 @@
 const $ = (id) => document.getElementById(id);
-const drop = $("drop"), input = $("file"), statusEl = $("status");
+const drop = $("drop"), input = $("file"), statusEl = $("status"), urlInput = $("urlInput");
 let lastResult = null;
 
 fetch("/api/warm", { method: "POST" }).catch(() => {});
@@ -48,7 +48,16 @@ drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " "
 input.addEventListener("change", () => { if (input.files[0]) analyze(input.files[0]); input.value = ""; });
 document.addEventListener("paste", (e) => {
   const item = [...e.clipboardData.items].find((i) => i.type.startsWith("image/"));
-  if (item) analyze(item.getAsFile());
+  if (item) return analyze(item.getAsFile());
+  if (e.target === urlInput) return;  // normal paste into the box; submit checks it
+  const text = e.clipboardData.getData("text").trim();
+  if (/^https?:\/\/\S+$/i.test(text)) { urlInput.value = text; analyzeUrl(text); }
+});
+$("urlForm").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const url = urlInput.value.trim();
+  if (!/^https?:\/\//i.test(url)) return setStatus("Enter an http:// or https:// image URL.", true);
+  analyzeUrl(url);
 });
 $("again").addEventListener("click", () => {
   $("result").hidden = true; drop.classList.remove("compact");
@@ -59,30 +68,50 @@ window.addEventListener("resize", () => lastResult && drawHeat(lastResult));
 
 async function analyze(file) {
   if (file.size > 15 * 1024 * 1024) return setStatus("That file is over 15 MB.", true);
+  urlInput.value = "";
+  const fd = new FormData();
+  fd.append("file", file, file.name || "pasted.png");
+  const body = await submit("/api/analyze", { method: "POST", body: fd });
+  if (!body) return;
+  const url = URL.createObjectURL(file);
+  show(body, url, () => URL.revokeObjectURL(url));
+}
+
+async function analyzeUrl(url) {
+  const body = await submit("/api/analyze-url", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url }),
+  }, "Fetching and analyzing…");
+  if (body) show(body, body.preview);
+}
+
+// POSTs, drives the status line, and returns the JSON body (null on error).
+async function submit(endpoint, opts, busy = "Analyzing…") {
   $("result").hidden = true;
   const slow = setTimeout(() => setStatus(
     '<span class="spinner"></span>Starting a GPU. The first check after a quiet period takes up to a minute…'), 8000);
-  setStatus('<span class="spinner"></span>Analyzing…');
-
-  const fd = new FormData();
-  fd.append("file", file, file.name || "pasted.png");
+  setStatus(`<span class="spinner"></span>${busy}`);
+  drop.classList.add("busy");
   let res, body;
   try {
-    res = await fetch("/api/analyze", { method: "POST", body: fd });
+    res = await fetch(endpoint, opts);
     body = await res.json().catch(() => ({}));
   } catch {
+    return setStatus("Network error. Please try again.", true), null;
+  } finally {
     clearTimeout(slow);
-    return setStatus("Network error. Please try again.", true);
+    drop.classList.remove("busy");
   }
-  clearTimeout(slow);
-  if (!res.ok) return setStatus(esc(body.detail || `Error ${res.status}`), true);
-
+  if (!res.ok) return setStatus(esc(body.detail || `Error ${res.status}`), true), null;
   setStatus("");
-  const url = URL.createObjectURL(file);
+  return body;
+}
+
+function show(body, src, done = () => {}) {
   const img = $("preview");
-  img.onload = () => { render(body); URL.revokeObjectURL(url); };
-  img.onerror = () => { render(body); };  // e.g. HEIC the browser can't show
-  img.src = url;
+  img.onload = () => { render(body); done(); };
+  img.onerror = () => { render(body); done(); };  // e.g. HEIC the browser can't show
+  img.src = src;
 }
 
 function render(r) {
@@ -113,18 +142,29 @@ function render(r) {
   $("explain").textContent = explain;
 
   // Provenance callout
-  const m = r.metadata, prov = $("provenance");
-  if (m.declared_ai) {
+  const m = r.metadata, prov = $("provenance"), cred = m.c2pa;
+  if (cred && cred.declares_ai && cred.state === "trusted") {
+    prov.className = "callout ai"; prov.hidden = false;
+    prov.innerHTML = `<strong>Signed Content Credentials from ${esc(cred.signer)} declare this image AI-generated.</strong> The signature is valid and on the C2PA trust list. This is independent of the classifier and is the strongest evidence available.`;
+  } else if (m.declared_ai) {
     prov.className = "callout ai"; prov.hidden = false;
     prov.innerHTML = "<strong>The file's own metadata declares it AI-generated.</strong> This is independent of the classifier and is strong evidence.";
+  } else if (cred && cred.state === "invalid") {
+    prov.className = "callout warn"; prov.hidden = false;
+    prov.innerHTML = "<strong>Content Credentials fail verification.</strong> The image was changed after it was signed, or the signature is forged. Its provenance can't be trusted.";
+  } else if (cred && cred.state === "trusted") {
+    prov.className = "callout camera"; prov.hidden = false;
+    prov.innerHTML = `<strong>Verified Content Credentials from ${esc(cred.signer)}.</strong> The signature is valid and on the C2PA trust list, and no AI generation is declared.`;
   } else if (m.camera) {
     prov.className = "callout camera"; prov.hidden = false;
     prov.innerHTML = `<strong>Camera metadata present:</strong> ${esc(m.camera)}. EXIF can be edited, so treat this as a hint, not proof.`;
   } else prov.hidden = true;
 
+  const tagText = { ai: "AI", camera: "camera", info: "trusted", warn: "failed" };
   $("metaList").innerHTML = m.findings.map((f) =>
-    `<li><span class="k">${esc(f.label)}${f.signal !== "neutral" ? `<span class="tag ${f.signal}">${f.signal === "ai" ? "AI" : f.signal}</span>` : ""}</span><span class="v">${esc(f.value)}</span></li>`
-  ).join("") + `<li><span class="k">File</span><span class="v">${esc(r.file.format)} · ${r.image.width}×${r.image.height} · ${(r.file.bytes / 1024).toFixed(0)} kB</span></li>`;
+    `<li><span class="k">${esc(f.label)}${f.signal !== "neutral" ? `<span class="tag ${f.signal}">${tagText[f.signal] || esc(f.signal)}</span>` : ""}</span><span class="v">${esc(f.value)}</span></li>`
+  ).join("") + `<li><span class="k">File</span><span class="v">${esc(r.file.format)} · ${r.image.width}×${r.image.height} · ${(r.file.bytes / 1024).toFixed(0)} kB</span></li>`
+    + (r.source_url ? `<li><span class="k">Source</span><span class="v"><a href="${esc(r.source_url)}" rel="noopener noreferrer" target="_blank">${esc(r.source_url)}</a></span></li>` : "");
 
   // Tile grid
   const tg = $("tileGrid");

@@ -4,3 +4,4 @@ python-multipart==0.0.12
 uvicorn[standard]==0.32.0
 pillow==10.4.0
 pillow-heif==0.18.0
+c2pa-python==0.37.12

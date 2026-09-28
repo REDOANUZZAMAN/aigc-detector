@@ -16,19 +16,29 @@
 
 <main>
   <section class="hero">
-    <h1>Was this image made by AI?</h1>
+    <div class="badge"><i></i>Swinv2 classifier · C2PA verification<span class="b-extra"> · nothing stored</span></div>
+    <h1>Was this image <em>made by AI?</em></h1>
     <p>Drop an image to get a classifier score, a region heatmap, and a check of the file's
        provenance metadata. Images are analyzed in memory and never stored.</p>
   </section>
 
+  <div class="intake">
   <label id="drop" class="drop" tabindex="0">
     <input id="file" type="file" accept="image/*,.heic,.heif" hidden>
     <div class="drop-inner">
-      <svg viewBox="0 0 24 24" width="36" height="36" aria-hidden="true"><path fill="currentColor" d="M19 13v6H5v-6H3v6a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-6h-2Zm-7-9-5 5 1.41 1.41L11 7.83V16h2V7.83l2.59 2.58L17 9l-5-5Z"/></svg>
-      <strong>Drop an image here, click to choose, or paste</strong>
+      <div class="drop-icon"><svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true"><path fill="currentColor" d="M19 13v6H5v-6H3v6a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-6h-2Zm-7-9-5 5 1.41 1.41L11 7.83V16h2V7.83l2.59 2.58L17 9l-5-5Z"/></svg></div>
+      <strong>Drop an image here, click to choose, or paste an image or link</strong>
       <span>JPEG · PNG · WebP · HEIC · up to 15 MB</span>
     </div>
   </label>
+
+  <form id="urlForm" class="url-form">
+    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M10.6 13.4a1 1 0 0 1 0-1.4l3.4-3.4a1 1 0 1 1 1.4 1.4L12 13.4a1 1 0 0 1-1.4 0Zm-2.8 5.3a4 4 0 0 1-2.8-6.8l2.1-2.1a1 1 0 0 1 1.4 1.4l-2.1 2.1a2 2 0 0 0 2.8 2.8l2.1-2.1a1 1 0 0 1 1.4 1.4l-2.1 2.1a4 4 0 0 1-2.8 1.2Zm7.8-5.1a1 1 0 0 1-.7-1.7l2.1-2.1a2 2 0 0 0-2.8-2.8L12 9.1a1 1 0 0 1-1.4-1.4l2.1-2.1a4 4 0 0 1 5.6 5.6l-2.1 2.1a1 1 0 0 1-.6.3Z"/></svg>
+    <input id="urlInput" type="url" inputmode="url" autocomplete="off" spellcheck="false"
+           placeholder="…or paste an image URL" aria-label="Image URL">
+    <button type="submit">Check URL</button>
+  </form>
+  </div>
 
   <div id="status" class="status" role="status" aria-live="polite"></div>
 
@@ -40,7 +50,7 @@
       </div>
       <div class="viewer-bar">
         <label class="toggle"><input type="checkbox" id="heatToggle" checked> Heatmap</label>
-        <span class="legend"><i class="lg-real"></i>real <i class="lg-ai"></i>AI</span>
+        <span class="legend">real <i></i> AI</span>
       </div>
     </div>
 
@@ -88,17 +98,18 @@
   </section>
 
   <section id="how" class="how">
-    <h2>How it works</h2>
+    <h2><span class="eyebrow">Method</span>How it works</h2>
     <div class="cards">
-      <div class="card"><h3>1 · Classifier</h3><p>A Swinv2 vision transformer trained to separate
+      <div class="card"><div class="card-icon"><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 2a3 3 0 0 1 3 3v.2A6 6 0 0 1 19 11v1a3 3 0 0 1 0 6h-.3A6 6 0 0 1 13 22h-2a6 6 0 0 1-5.7-4H5a3 3 0 0 1 0-6v-1a6 6 0 0 1 4-5.8V5a3 3 0 0 1 3-3Zm-2.5 10a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3Zm5 0a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3Z"/></svg></div><h3>Classifier</h3><p>A Swinv2 vision transformer trained to separate
         camera images from generated ones scores the whole image. That score is the verdict.</p></div>
-      <div class="card"><h3>2 · Heatmap</h3><p>The image is cut into a 4×4 grid and every tile is
+      <div class="card"><div class="card-icon"><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M3 3h8v8H3V3Zm10 0h8v8h-8V3ZM3 13h8v8H3v-8Zm10 0h8v8h-8v-8Z" opacity=".35"/><path fill="currentColor" d="M13 13h8v8h-8z"/></svg></div><h3>Region heatmap</h3><p>The image is cut into a 4×4 grid and every tile is
         scored by the same model, showing <em>where</em> the signal comes from.</p></div>
-      <div class="card"><h3>3 · Provenance</h3><p>We read C2PA Content Credentials, IPTC source
-        type, EXIF and PNG generator tags. These are reported beside the score, never mixed into it.</p></div>
+      <div class="card"><div class="card-icon"><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 2 4 5v6c0 5 3.4 9.7 8 11 4.6-1.3 8-6 8-11V5l-8-3Zm-1.2 14.2-3.5-3.5 1.4-1.4 2.1 2.1 4.9-4.9 1.4 1.4-6.3 6.3Z"/></svg></div><h3>Provenance</h3><p>We verify C2PA Content Credentials against the
+        C2PA trust list and read IPTC source type, EXIF and PNG generator tags. These are reported
+        beside the score, never mixed into it.</p></div>
     </div>
 
-    <h2>Read the result carefully</h2>
+    <h2><span class="eyebrow">Limits</span>Read the result carefully</h2>
     <ul class="caveats">
       <li><strong>This is a probability, not proof.</strong> Don't use it as the only basis for
         accusing anyone or rejecting anything.</li>
