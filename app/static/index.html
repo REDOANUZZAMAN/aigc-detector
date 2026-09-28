@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AIGC Detector: is this image AI-generated?</title>
+<meta name="description" content="Upload an image to check whether it was AI-generated. Swinv2 classifier with a region heatmap and provenance metadata checks.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Cdefs%3E%3ClinearGradient id=%22g%22%3E%3Cstop offset=%220%22 stop-color=%22%232fb67c%22/%3E%3Cstop offset=%221%22 stop-color=%22%23e5484d%22/%3E%3C/linearGradient%3E%3C/defs%3E%3Ccircle cx=%228%22 cy=%228%22 r=%227%22 fill=%22url(%23g)%22/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <div class="brand"><span class="dot"></span>AIGC Detector</div>
+  <nav><a href="#how">How it works</a><a href="/api/docs">API</a></nav>
+</header>
+
+<main>
+  <section class="hero">
+    <h1>Was this image made by AI?</h1>
+    <p>Drop an image to get a classifier score, a region heatmap, and a check of the file's
+       provenance metadata. Images are analyzed in memory and never stored.</p>
+  </section>
+
+  <label id="drop" class="drop" tabindex="0">
+    <input id="file" type="file" accept="image/*,.heic,.heif" hidden>
+    <div class="drop-inner">
+      <svg viewBox="0 0 24 24" width="36" height="36" aria-hidden="true"><path fill="currentColor" d="M19 13v6H5v-6H3v6a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-6h-2Zm-7-9-5 5 1.41 1.41L11 7.83V16h2V7.83l2.59 2.58L17 9l-5-5Z"/></svg>
+      <strong>Drop an image here, click to choose, or paste</strong>
+      <span>JPEG · PNG · WebP · HEIC · up to 15 MB</span>
+    </div>
+  </label>
+
+  <div id="status" class="status" role="status" aria-live="polite"></div>
+
+  <section id="result" class="result" hidden>
+    <div class="viewer">
+      <div class="stage">
+        <img id="preview" alt="Uploaded image">
+        <canvas id="heat"></canvas>
+      </div>
+      <div class="viewer-bar">
+        <label class="toggle"><input type="checkbox" id="heatToggle" checked> Heatmap</label>
+        <span class="legend"><i class="lg-real"></i>real <i class="lg-ai"></i>AI</span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div id="verdict" class="verdict">
+        <div class="v-label" id="vLabel"></div>
+        <div class="v-score"><span id="vScore"></span><small>AI likelihood</small></div>
+      </div>
+
+      <div class="meter" aria-hidden="true">
+        <div class="track">
+          <div class="zone z-real"></div><div class="zone z-mid"></div><div class="zone z-ai"></div>
+          <div class="needle" id="needle"></div>
+        </div>
+        <div class="ticks"><span>0</span><span id="tLow">0.10</span><span id="tMid">0.5</span><span id="tHigh">0.99</span><span>1</span></div>
+      </div>
+      <p class="fine">Log-odds scale: the ends are stretched because that is where most scores fall.</p>
+      <p id="explain" class="explain"></p>
+
+      <div id="provenance" class="callout" hidden></div>
+
+      <details open>
+        <summary>Provenance metadata</summary>
+        <ul id="metaList" class="kv"></ul>
+      </details>
+
+      <details>
+        <summary>Region scores</summary>
+        <div id="tileGrid" class="tiles"></div>
+        <p class="fine">Each tile is scored independently by the same classifier. A hot region inside
+           a cool image can indicate local AI editing (inpainting); uniform heat is typical of fully
+           generated images.</p>
+      </details>
+
+      <details>
+        <summary>Forensic diagnostics</summary>
+        <ul id="diagList" class="kv"></ul>
+      </details>
+
+      <div class="foot">
+        <span id="modelInfo"></span>
+        <button id="again" class="ghost">Check another image</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="how" class="how">
+    <h2>How it works</h2>
+    <div class="cards">
+      <div class="card"><h3>1 · Classifier</h3><p>A Swinv2 vision transformer trained to separate
+        camera images from generated ones scores the whole image. That score is the verdict.</p></div>
+      <div class="card"><h3>2 · Heatmap</h3><p>The image is cut into a 4×4 grid and every tile is
+        scored by the same model, showing <em>where</em> the signal comes from.</p></div>
+      <div class="card"><h3>3 · Provenance</h3><p>We read C2PA Content Credentials, IPTC source
+        type, EXIF and PNG generator tags. These are reported beside the score, never mixed into it.</p></div>
+    </div>
+
+    <h2>Read the result carefully</h2>
+    <ul class="caveats">
+      <li><strong>This is a probability, not proof.</strong> Don't use it as the only basis for
+        accusing anyone or rejecting anything.</li>
+      <li><strong>Why the bands are so wide.</strong> Scores cluster at the extremes and the model is
+        poorly calibrated in the middle. In our own n=50 benchmark, 20% of real photos scored above
+        0.5, so we only say "likely AI" above 0.99.</li>
+      <li><strong>Compression pushes scores down.</strong> WeChat, WhatsApp and similar apps
+        recompress images, which lowers scores. Noise and grain push them up. Upload the original
+        file when you can.</li>
+      <li><strong>New generators can evade it.</strong> Recent models (Midjourney v7, FLUX dev,
+        Firefly 4) are hard for every public detector. A low score does not clear an image.</li>
+      <li><strong>Missing metadata means nothing.</strong> Most platforms strip it. Metadata that is
+        <em>present</em> and names a generator is strong evidence, though.</li>
+    </ul>
+  </section>
+</main>
+
+<footer>
+  Model: <a href="https://huggingface.co/haywoodsloan/ai-image-detector-deploy" rel="noopener">haywoodsloan/ai-image-detector-deploy</a> (Apache-2.0)
+</footer>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
